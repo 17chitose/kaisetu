@@ -10,15 +10,11 @@ app.use(cors());
 
 app.use(express.static('public'));
 
-// 音声の一時保存先（ローカルなのでuploadsに戻します）
+// 音声の一時保存先
 const upload = multer({ dest: 'uploads/' });
 
-// 💡 ここにあなたのGemini APIキーを直接貼るか、環境変数を使ってください
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-app.get('/ping', (req, res) => {
-    res.send('🎉 Gemini特化サーバー生きてます！');
-});
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 app.post('/api/process-audio', upload.single('audio'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: "音声がありません。" });

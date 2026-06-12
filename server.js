@@ -1,99 +1,84 @@
 require('dotenv').config();
-const Groq = require('groq-sdk');
-const fs = require('fs');
-const record = require('node-record-lpcm16');
 const express = require('express');
-const multer = require('multer');
 const cors = require('cors');
+const multer = require('multer');
+const fs = require('fs');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-const port = 8080;
-const app = express(); 
-
+const app = express();
 app.use(cors());
 
 app.use(express.static('public'));
 
-// APIクライアントの初期化
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-
+// 音声の一時保存先（ローカルなのでuploadsに戻します）
 const upload = multer({ dest: 'uploads/' });
 
-//音声処理API
-app.post("/api/process-audio", upload.single('audio'), async(req, res)=>{
-    if (!req.file) {
-        return res.status(400).json({ error: "音声ファイルが送信されていません。" });
-    }
+// 💡 ここにあなたのGemini APIキーを直接貼るか、環境変数を使ってください
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
+app.get('/ping', (req, res) => {
+    res.send('🎉 Gemini特化サーバー生きてます！');
+});
 
-    //修正
-    const originalPath = req.file.path;
-    const originalName = req.file.originalname;
-    
-    // 送られてきたファイル名（test.mp3など）から拡張子を取り出す。無ければ安全のため mp3 にする
-    const extension = originalName.includes('.') ? originalName.split('.').pop() : 'mp3';
-    
-    // ファイル名に拡張子をドッキング！（例：uploads/xxxxxx.mp3）
-    const tempFilePath = `${originalPath}.${extension}`;
-    
-    // 実際にサーバー上のファイル名を変更する
-    fs.renameSync(originalPath, tempFilePath);
+app.post('/api/process-audio', upload.single('audio'), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "音声がありません。" });
 
-    console.log(`📁 音声ファイルを一時保存しました: ${tempFilePath}`);
+    const tempFilePath = req.file.path;
+    // ブラウザから送られてくる音声の形式（audio/webmなど）を取得
+    const mimeType = req.file.mimetype || 'audio/webm';
 
     try {
-        // 1. Groq (Whisper) で文字起こし
-        const transcription = await groq.audio.transcriptions.create({
-            //fs.createReadStreamは少しずつファイルを読み込む
-            file: fs.createReadStream(tempFilePath),
-            model: "whisper-large-v3",
-            language: "ja",
+        console.log(`📥 音声データを受信しました！Geminiに丸投げします...`);
+
+        // 最新のGemini 2.5 Flashを呼び出し、返事を「JSON形式」に強制する
+        const model = genAI.getGenerativeModel({ 
+            model: "gemini-2.5-flash",
+            generationConfig: { responseMimeType: "application/json" } 
         });
-        
-        const text = transcription.text;
-        console.log(`📝 【文字起こし】: ${text}`);
 
-        if (!text || text.trim() === "") {
-            return res.json({ text: "", explanation: "音声が検出されませんでした。" });
-        }
-
-        // 2. Gemini で専門用語・カタカナ語の解説
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         const prompt = `
-        以下の文章にカタカナ語や専門用語が含まれていれば、その言葉の意味を簡潔に箇条書きで解説してください。
-        もし一般的な言葉しかなく、解説が不要な場合は「解説が必要な用語はありません」とだけ出力してください。
-        
-        文章: ${text}
+        添付された音声ファイルを聞き取って、以下の2つを行ってください。
+        1. 音声の「文字起こし」
+        2. その中の「専門用語・カタカナ語の解説」（無ければ「解説不要」と記載）
+
+        必ず以下のJSON形式のフォーマットで出力してください：
+        {
+            "text": "文字起こしの結果をここに入れる",
+            "explanation": "用語解説の結果をここに入れる"
+        }
         `;
 
-        const result = await model.generateContent(prompt);
-        const explanation = result.response.text();
-        console.log(`💡 【AI解説】:\n${explanation}`);
+        // 音声データをGeminiが読める形式（Base64）に変換
+        const audioPart = {
+            inlineData: {
+                data: Buffer.from(fs.readFileSync(tempFilePath)).toString("base64"),
+                mimeType: mimeType
+            }
+        };
 
-        // フロントエンド（ブラウザ）へ結果を返す
-        res.json({
-            text: text,
-            explanation: explanation
-        });
+        // プロンプトと音声データを一緒にGeminiへドーン！
+        const result = await model.generateContent([prompt, audioPart]);
+        const responseText = result.response.text();
+        
+        // Geminiが作ってくれたJSONをプログラム用に変換して、フロントエンドへ返す
+        const parsedResult = JSON.parse(responseText);
+        
+        console.log(`📝 文字起こし: ${parsedResult.text}`);
+        console.log(`💡 解説: ${parsedResult.explanation}`);
+
+        res.json(parsedResult);
 
     } catch (error) {
         console.error("❌ エラーが発生しました:", error);
         res.status(500).json({ error: "サーバー内部でエラーが発生しました。" });
     } finally {
-        // 【重要】処理が終わったら、成功・失敗に関わらず一時ファイルを削除する
-        // fs.existsSyncは指定されたパスにファイルが存在するかfs.unlinkSyncは削除
-        try {
-            if (fs.existsSync(tempFilePath)) {
-                fs.unlinkSync(tempFilePath);
-                console.log(`🧹 一時ファイルを削除しました: ${tempFilePath}`);
-            }
-        } catch (cleanupError) {
-            console.error("⚠️ 一時ファイルの削除に失敗しました:", cleanupError);
-        }
+        // お掃除
+        if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
     }
 });
 
-app.listen(port, '127.0.0.1', () => {
-    console.log(`🚀 サーバーが起動しました！ http://localhost:${port}`);
+// ポート8080で起動
+const port = 8080;
+app.listen(port, () => {
+    console.log(`🚀 Gemini丸投げサーバーが起動しました！ http://localhost:${port}`);
 });

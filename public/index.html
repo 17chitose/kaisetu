@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>⚡️ 超リアルタイムAI解説</title>
+    <script src="http://localhost:8080/socket.io/socket.io.js"></script>
+    <style>
+        body { font-family: sans-serif; text-align: center; background: #f4f7f6; padding: 20px; }
+        .container { max-width: 700px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
+        button { font-size: 16px; padding: 12px 24px; border-radius: 8px; cursor: pointer; border: none; font-weight: bold; }
+        #startBtn { background: #e74c3c; color: white; }
+        #stopBtn { background: #95a5a6; color: white; display: none; }
+        .live-text { font-size: 20px; color: #34495e; min-height: 40px; margin: 20px 0; border-bottom: 2px dashed #bdc3c7; padding-bottom: 10px; }
+        .history { text-align: left; background: #f8f9fa; padding: 15px; border-radius: 8px; max-height: 400px; overflow-y: auto; }
+        .chat-bubble { background: #e1f5fe; padding: 10px; border-radius: 8px; margin-bottom: 10px; border-left: 5px solid #2980b9; }
+        .ai-bubble { background: #e8f8f5; padding: 10px; border-radius: 8px; margin-bottom: 20px; border-left: 5px solid #2ecc71; font-size: 14px; color: #27ae60; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>⚡️ 超リアルタイムAI解説</h1>
+        <button id="startBtn">🔴 リアルタイム解析スタート</button>
+        <button id="stopBtn">⏹️ 停止</button>
+
+        <div class="live-text" id="liveText">（ここにリアルタイムの音声が表示されます...）</div>
+
+        <div class="history" id="historyBox"></div>
+    </div>
+
+    <script>
+        // 1. WebSocketサーバーに接続！
+        const socket = io('http://localhost:8080');
+
+        // 2. ブラウザ標準の音声認識機能（Web Speech API）をセットアップ
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const recognition = new SpeechRecognition();
+        recognition.lang = 'ja-JP';
+        recognition.continuous = true; // 喋り続けても止まらないようにする
+        recognition.interimResults = true; // 喋っている途中の文字も取得する
+
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const liveText = document.getElementById('liveText');
+        const historyBox = document.getElementById('historyBox');
+
+        // 録音スタート
+        startBtn.onclick = () => {
+            recognition.start();
+            startBtn.style.display = 'none';
+            stopBtn.style.display = 'inline-block';
+            liveText.innerText = "🎤 認識中...";
+        };
+
+        // 録音ストップ
+        stopBtn.onclick = () => {
+            recognition.stop();
+            stopBtn.style.display = 'none';
+            startBtn.style.display = 'inline-block';
+            liveText.innerText = "（停止中）";
+        };
+
+        // 🗣️ 音声を認識するたびに動く魔法の処理
+        recognition.onresult = (event) => {
+            let interimTranscript = ''; // 喋り途中の文字
+            let finalTranscript = '';   // 確定した文字
+
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                if (event.results[i].isFinal) {
+                    finalTranscript += event.results[i][0].transcript;
+                } else {
+                    interimTranscript += event.results[i][0].transcript;
+                }
+            }
+
+            // 喋り途中の文字を画面にパラパラ表示
+            liveText.innerText = interimTranscript || "🎤 認識中...";
+
+            // 一文が確定したら、WebSocketでサーバーに送信！
+            if (finalTranscript !== '') {
+                // 画面に自分の発言を追加
+                historyBox.innerHTML += `<div class="chat-bubble">🗣️ ${finalTranscript}</div>`;
+                historyBox.scrollTop = historyBox.scrollHeight;
+                
+                // WebSocketでテキストをサーバーに飛ばす！
+                socket.emit('send_text', { text: finalTranscript });
+            }
+        };
+
+        // 💡 サーバーからAIの解説が返ってきた時の処理
+        socket.on('receive_explanation', (data) => {
+            // 画面にAIの解説を追加
+            let formattedText = data.explanation.replace(/\n/g, '<br>');
+            historyBox.innerHTML += `<div class="ai-bubble">💡 <b>AI解説:</b><br>${formattedText}</div>`;
+            historyBox.scrollTop = historyBox.scrollHeight;
+        });
+
+        // エラーで止まっちゃった時は自動で再起動するおまじない
+        recognition.onend = () => {
+            if (stopBtn.style.display === 'inline-block') {
+                recognition.start();
+            }
+        };
+    </script>
+</body>
+</html>
